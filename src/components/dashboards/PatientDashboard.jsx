@@ -3,15 +3,27 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
 import axios from 'axios';
 import { Buffer } from 'buffer';
-import CryptoJS from 'crypto-js'; // Add this dependency with: npm install crypto-js
+import CryptoJS from 'crypto-js';
 
 if (!window.Buffer) {
     window.Buffer = Buffer;
 }
 
-// Pinata API keys (replace with your actual keys)
+// Pinata API keys
 const PINATA_API_KEY = 'f1efd88c2b40778ca26e';
 const PINATA_API_SECRET = '3921f9501ca6abef2b071bf0725456d09033accee84445f731f106cbe135b21c';
+
+// Smart contract ABI for role management (simplified)
+const rolesContractABI = [
+    "function getUserRole(address _user) external view returns (uint8)",
+    "function getAllDoctors() external view returns (address[])",
+    "function authorizeDoctor(address doctor) external",
+    "function revokeDoctor(address doctor) external",
+    "function isDoctorAuthorized(address patient, address doctor) external view returns (bool)"
+];
+
+// Smart contract address - replace with your deployed contract
+const rolesContractAddress = "YOUR_ROLES_CONTRACT_ADDRESS";
 
 function PatientDashboard({ walletData, onLogout }) {
     const [balance, setBalance] = useState(null);
@@ -21,25 +33,71 @@ function PatientDashboard({ walletData, onLogout }) {
     const [fileDescription, setFileDescription] = useState('');
     const [uploadStatus, setUploadStatus] = useState('');
     const [myRecords, setMyRecords] = useState([]);
-    const [authorizedDoctors, setAuthorizedDoctors] = useState([]);
-    const [doctorAddress, setDoctorAddress] = useState('');
+    const [allDoctors, setAllDoctors] = useState([]);
+    const [authorizedDoctors, setAuthorizedDoctors] = useState({});
+    const [rolesContract, setRolesContract] = useState(null);
 
+    // Initialize contract
     useEffect(() => {
-        const fetchBalance = async () => {
-            try {
-                const balanceInWei = await walletData.provider.getBalance(walletData.address);
-                setBalance(ethers.formatEther(balanceInWei));
-            } catch (error) {
-                console.error("Error fetching balance:", error);
-            } finally {
-                setLoading(false);
+        const initContract = async () => {
+            if (walletData && walletData.signer) {
+                const contract = new ethers.Contract(
+                    rolesContractAddress,
+                    rolesContractABI,
+                    walletData.signer
+                );
+                setRolesContract(contract);
             }
         };
 
-        fetchBalance();
-        loadMyRecords();
-        loadAuthorizedDoctors();
+        initContract();
     }, [walletData]);
+
+    const fetchBalance = useCallback(async () => {
+        try {
+            const balanceInWei = await walletData.provider.getBalance(walletData.address);
+            setBalance(ethers.formatEther(balanceInWei));
+        } catch (error) {
+            console.error("Error fetching balance:", error);
+        } finally {
+            setLoading(false);
+        }
+    }, [walletData]);
+
+    const loadMyRecords = useCallback(() => {
+        const records = JSON.parse(localStorage.getItem(`patient_records_${walletData.address}`) || '[]');
+        setMyRecords(records);
+    }, [walletData.address]);
+
+    const loadAllDoctors = useCallback(async () => {
+        if (!rolesContract) return;
+
+        try {
+            // Get all doctors from the blockchain
+            const doctorAddresses = await rolesContract.getAllDoctors();
+
+            // For each doctor, check if they're authorized by this patient
+            const doctorsWithAuth = {};
+
+            for (const address of doctorAddresses) {
+                const isAuthorized = await rolesContract.isDoctorAuthorized(walletData.address, address);
+                doctorsWithAuth[address] = isAuthorized;
+            }
+
+            setAllDoctors(doctorAddresses);
+            setAuthorizedDoctors(doctorsWithAuth);
+        } catch (error) {
+            console.error("Error loading doctors:", error);
+        }
+    }, [rolesContract, walletData.address]);
+
+    useEffect(() => {
+        if (rolesContract) {
+            fetchBalance();
+            loadMyRecords();
+            loadAllDoctors();
+        }
+    }, [rolesContract, fetchBalance, loadMyRecords, loadAllDoctors]);
 
     // Format address for display
     const formatAddress = (address) => {
@@ -156,41 +214,40 @@ function PatientDashboard({ walletData, onLogout }) {
         }
     };
 
-    const loadMyRecords = () => {
-        const records = JSON.parse(localStorage.getItem(`patient_records_${walletData.address}`) || '[]');
-        setMyRecords(records);
-    };
+    const authorizeDoctor = async (doctorAddress) => {
+        if (!rolesContract) return;
 
-    const loadAuthorizedDoctors = () => {
-        const doctors = JSON.parse(localStorage.getItem(`authorized_doctors_${walletData.address}`) || '[]');
-        setAuthorizedDoctors(doctors);
-    };
+        try {
+            // Call smart contract to authorize doctor
+            const tx = await rolesContract.authorizeDoctor(doctorAddress);
+            await tx.wait();
 
-    const authorizeDoctor = () => {
-        if (!doctorAddress) {
-            return;
-        }
-
-        const doctors = JSON.parse(localStorage.getItem(`authorized_doctors_${walletData.address}`) || '[]');
-
-        // Check if doctor is already authorized
-        if (!doctors.some(doc => doc.address === doctorAddress)) {
-            doctors.push({
-                address: doctorAddress,
-                authorizedDate: new Date().toISOString()
-            });
-
-            localStorage.setItem(`authorized_doctors_${walletData.address}`, JSON.stringify(doctors));
-            setDoctorAddress('');
-            loadAuthorizedDoctors();
+            // Update local state
+            setAuthorizedDoctors(prev => ({
+                ...prev,
+                [doctorAddress]: true
+            }));
+        } catch (error) {
+            console.error("Error authorizing doctor:", error);
         }
     };
 
-    const revokeAccess = (doctorAddress) => {
-        const doctors = JSON.parse(localStorage.getItem(`authorized_doctors_${walletData.address}`) || '[]');
-        const updatedDoctors = doctors.filter(doc => doc.address !== doctorAddress);
-        localStorage.setItem(`authorized_doctors_${walletData.address}`, JSON.stringify(updatedDoctors));
-        loadAuthorizedDoctors();
+    const revokeAccess = async (doctorAddress) => {
+        if (!rolesContract) return;
+
+        try {
+            // Call smart contract to revoke doctor's access
+            const tx = await rolesContract.revokeDoctor(doctorAddress);
+            await tx.wait();
+
+            // Update local state
+            setAuthorizedDoctors(prev => ({
+                ...prev,
+                [doctorAddress]: false
+            }));
+        } catch (error) {
+            console.error("Error revoking doctor access:", error);
+        }
     };
 
     const viewRecord = async (record) => {
@@ -290,41 +347,35 @@ function PatientDashboard({ walletData, onLogout }) {
                 </div>
 
                 <div className="card">
-                    <h2>Doctor Access</h2>
-                    <div className="doctor-form">
-                        <input
-                            type="text"
-                            placeholder="Doctor's wallet address"
-                            value={doctorAddress}
-                            onChange={(e) => setDoctorAddress(e.target.value)}
-                            className="text-input"
-                        />
-                        <button
-                            onClick={authorizeDoctor}
-                            disabled={!doctorAddress}
-                            className="authorize-button"
-                        >
-                            Authorize Doctor
-                        </button>
-                    </div>
-
-                    <h3>Authorized Doctors</h3>
-                    {authorizedDoctors.length === 0 ? (
-                        <p>No doctors authorized</p>
+                    <h2>Doctor Access Management</h2>
+                    <h3>All Registered Doctors</h3>
+                    {allDoctors.length === 0 ? (
+                        <p>No doctors found in the system</p>
                     ) : (
                         <ul className="doctors-list">
-                            {authorizedDoctors.map(doctor => (
-                                <li key={doctor.address} className="doctor-item">
+                            {allDoctors.map(doctorAddress => (
+                                <li key={doctorAddress} className="doctor-item">
                                     <div className="doctor-info">
-                                        <p>Address: {doctor.address}</p>
-                                        <p>Authorized: {new Date(doctor.authorizedDate).toLocaleDateString()}</p>
+                                        <p>Address: {doctorAddress}</p>
+                                        <p>Status: {authorizedDoctors[doctorAddress] ? 'Authorized' : 'Not Authorized'}</p>
                                     </div>
-                                    <button
-                                        onClick={() => revokeAccess(doctor.address)}
-                                        className="revoke-button"
-                                    >
-                                        Revoke Access
-                                    </button>
+                                    <div className="doctor-actions">
+                                        {!authorizedDoctors[doctorAddress] ? (
+                                            <button
+                                                onClick={() => authorizeDoctor(doctorAddress)}
+                                                className="authorize-button"
+                                            >
+                                                Grant Access
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={() => revokeAccess(doctorAddress)}
+                                                className="revoke-button"
+                                            >
+                                                Revoke Access
+                                            </button>
+                                        )}
+                                    </div>
                                 </li>
                             ))}
                         </ul>
