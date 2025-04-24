@@ -1,9 +1,9 @@
 // src/components/Login.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 import RoleSelection from './RoleSelection';
 
-// ABI for our deployed contract
+// ABI and contract address remain the same
 const contractABI = [
     {
         "inputs": [
@@ -14,6 +14,24 @@ const contractABI = [
             }
         ],
         "name": "registerUser",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "accountNum",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint8",
+                "name": "_roleId",
+                "type": "uint8"
+            }
+        ],
+        "name": "registerUserByAccountNum",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -40,6 +58,25 @@ const contractABI = [
     {
         "inputs": [
             {
+                "internalType": "uint256",
+                "name": "accountNum",
+                "type": "uint256"
+            }
+        ],
+        "name": "convertAccountNumToAddress",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "pure",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
                 "internalType": "address",
                 "name": "_user",
                 "type": "address"
@@ -59,12 +96,50 @@ const contractABI = [
     {
         "inputs": [
             {
+                "internalType": "uint256",
+                "name": "accountNum",
+                "type": "uint256"
+            }
+        ],
+        "name": "getUserRoleByAccountNum",
+        "outputs": [
+            {
+                "internalType": "uint8",
+                "name": "",
+                "type": "uint8"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
                 "internalType": "address",
                 "name": "_user",
                 "type": "address"
             }
         ],
         "name": "isRegistered",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "accountNum",
+                "type": "uint256"
+            }
+        ],
+        "name": "isRegisteredByAccountNum",
         "outputs": [
             {
                 "internalType": "bool",
@@ -113,16 +188,47 @@ const contractABI = [
         "stateMutability": "view",
         "type": "function"
     }
-];
-
-// Address of our deployed contract on Hedera Testnet
-const contractAddress = "0x55A28270D65b0cEC232249e2422F548e0d9e521D";
+]; // Your existing ABI
+const contractAddress = "0x0054018F0dA61fb0BdA13CF8dBb5A9bD652C20AD";
 
 function Login({ onLogin }) {
     const [isConnecting, setIsConnecting] = useState(false);
     const [error, setError] = useState('');
     const [isNewUser, setIsNewUser] = useState(false);
     const [walletData, setWalletData] = useState(null);
+    const [showOptions, setShowOptions] = useState(false);
+
+    // Add event listener for account changes
+    useEffect(() => {
+        if (window.ethereum) {
+            // Listen for account changes
+            const handleAccountsChanged = async (accounts) => {
+                console.log('Account changed:', accounts);
+
+                if (accounts.length > 0) {
+                    // Reset state and check if the new account is registered
+                    setWalletData(null);
+                    setIsNewUser(false);
+                    setShowOptions(false);
+
+                    // You could automatically reconnect with the new account
+                    await connectWallet();
+                } else {
+                    // User disconnected all accounts
+                    setWalletData(null);
+                    setIsNewUser(false);
+                    setShowOptions(false);
+                }
+            };
+
+            window.ethereum.on('accountsChanged', handleAccountsChanged);
+
+            // Cleanup listener when component unmounts
+            return () => {
+                window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+            };
+        }
+    }, []);
 
     const connectWallet = async () => {
         setIsConnecting(true);
@@ -210,6 +316,16 @@ function Login({ onLogin }) {
         }
     };
 
+    const handleNewUser = () => {
+        setShowOptions(false);
+        connectWallet();
+    };
+
+    const handleExistingUser = () => {
+        setShowOptions(false);
+        connectWallet();
+    };
+
     if (isNewUser && walletData) {
         return <RoleSelection onRoleSelect={handleRoleSelect} />;
     }
@@ -223,13 +339,33 @@ function Login({ onLogin }) {
                 <h3>Connect Your Wallet</h3>
                 <p>Please connect your MetaMask wallet to access the dashboard</p>
 
-                <button
-                    className="connect-button"
-                    onClick={connectWallet}
-                    disabled={isConnecting}
-                >
-                    {isConnecting ? 'Connecting...' : 'Connect MetaMask'}
-                </button>
+                {!showOptions ? (
+                    <button
+                        className="connect-button"
+                        onClick={() => setShowOptions(true)}
+                        disabled={isConnecting}
+                    >
+                        Connect Wallet
+                    </button>
+                ) : (
+                    <div className="user-options">
+                        <p>Are you a new user or already registered?</p>
+                        <div className="button-group">
+                            <button
+                                className="option-button"
+                                onClick={handleNewUser}
+                            >
+                                New User
+                            </button>
+                            <button
+                                className="option-button"
+                                onClick={handleExistingUser}
+                            >
+                                Existing User
+                            </button>
+                        </div>
+                    </div>
+                )}
 
                 {error && <p className="error-message">{error}</p>}
             </div>
