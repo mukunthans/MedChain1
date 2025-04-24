@@ -23,7 +23,7 @@ const rolesContractABI = [
 ];
 
 // Smart contract address - replace with your deployed contract
-const rolesContractAddress = "YOUR_ROLES_CONTRACT_ADDRESS";
+const rolesContractAddress = "0x4F853a7af905c006F4d7EBD7C744db8F60d78921";
 
 function PatientDashboard({ walletData, onLogout }) {
     const [balance, setBalance] = useState(null);
