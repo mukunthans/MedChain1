@@ -1,26 +1,17 @@
 // src/components/dashboards/PatientDashboard.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
-import { create } from 'ipfs-http-client';
+import axios from 'axios';
 import { Buffer } from 'buffer';
+import CryptoJS from 'crypto-js'; // Add this dependency with: npm install crypto-js
 
 if (!window.Buffer) {
     window.Buffer = Buffer;
 }
 
-// Configure IPFS client with Infura (you'll need to create an account)
-const projectId = 'YOUR_INFURA_PROJECT_ID';
-const projectSecret = 'YOUR_INFURA_PROJECT_SECRET';
-const auth = 'Basic ' + Buffer.from(projectId + ':' + projectSecret).toString('base64');
-
-const ipfsClient = create({
-    host: 'ipfs.infura.io',
-    port: 5001,
-    protocol: 'https',
-    headers: {
-        authorization: auth
-    }
-});
+// Pinata API keys (replace with your actual keys)
+const PINATA_API_KEY = 'f1efd88c2b40778ca26e';
+const PINATA_API_SECRET = '3921f9501ca6abef2b071bf0725456d09033accee84445f731f106cbe135b21c';
 
 function PatientDashboard({ walletData, onLogout }) {
     const [balance, setBalance] = useState(null);
@@ -79,17 +70,43 @@ function PatientDashboard({ walletData, onLogout }) {
             const fileBuffer = Buffer.from(fileData);
 
             // Generate a random encryption key
-            const encryptionKey = ethers.randomBytes(32);
+            const encryptionKey = CryptoJS.lib.WordArray.random(16).toString();
 
-            // Encrypt the file (simplified - in production use a proper encryption library)
-            // This is a placeholder - you should implement proper AES encryption
-            const encryptedBuffer = encryptFile(fileBuffer, encryptionKey);
+            // Encrypt the file using CryptoJS
+            const encryptedData = CryptoJS.AES.encrypt(
+                Buffer.from(fileBuffer).toString('base64'),
+                encryptionKey
+            ).toString();
 
-            // Upload encrypted file to IPFS
-            const result = await ipfsClient.add(encryptedBuffer);
-            const ipfsCid = result.path;
+            // Create a Blob from the encrypted data
+            const encryptedBlob = new Blob([encryptedData], { type: 'application/encrypted' });
 
-            // Create metadata including encryption key (encrypted with patient's public key)
+            // Create form data for Pinata
+            const formData = new FormData();
+            formData.append('file', new File([encryptedBlob], fileName, { type: 'application/encrypted' }));
+
+            // Add metadata for Pinata
+            const pinataMetadata = JSON.stringify({
+                name: `${fileName}_encrypted`,
+            });
+            formData.append('pinataMetadata', pinataMetadata);
+
+            // Upload encrypted file to IPFS via Pinata
+            const fileUploadRes = await axios.post(
+                'https://api.pinata.cloud/pinning/pinFileToIPFS',
+                formData,
+                {
+                    headers: {
+                        'Content-Type': 'multipart/form-data',
+                        'pinata_api_key': PINATA_API_KEY,
+                        'pinata_secret_api_key': PINATA_API_SECRET
+                    }
+                }
+            );
+
+            const fileCid = fileUploadRes.data.IpfsHash;
+
+            // Create metadata including encryption key
             const metadata = {
                 name: fileName,
                 description: fileDescription,
@@ -97,14 +114,30 @@ function PatientDashboard({ walletData, onLogout }) {
                 size: file.size,
                 uploadDate: new Date().toISOString(),
                 patientAddress: walletData.address,
-                encryptionKey: encryptionKey.toString('hex') // In production, encrypt this
+                fileCid: fileCid,
+                encryptionKey: encryptionKey // In production, encrypt this with patient's public key
             };
 
-            // Store metadata in localStorage (in production, use a secure database or blockchain)
+            // Upload metadata to IPFS via Pinata
+            const metadataRes = await axios.post(
+                'https://api.pinata.cloud/pinning/pinJSONToIPFS',
+                metadata,
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'pinata_api_key': PINATA_API_KEY,
+                        'pinata_secret_api_key': PINATA_API_SECRET
+                    }
+                }
+            );
+
+            const metadataCid = metadataRes.data.IpfsHash;
+
+            // Store record in localStorage (in production, use blockchain)
             const records = JSON.parse(localStorage.getItem(`patient_records_${walletData.address}`) || '[]');
             records.push({
                 id: Date.now(),
-                cid: ipfsCid,
+                cid: metadataCid,
                 metadata: metadata
             });
             localStorage.setItem(`patient_records_${walletData.address}`, JSON.stringify(records));
@@ -121,13 +154,6 @@ function PatientDashboard({ walletData, onLogout }) {
             console.error("Error uploading file:", error);
             setUploadStatus('Error uploading file: ' + error.message);
         }
-    };
-
-    // Placeholder encryption function - replace with actual encryption
-    const encryptFile = (buffer, key) => {
-        // In a real application, implement AES encryption here
-        // This is just a placeholder
-        return buffer;
     };
 
     const loadMyRecords = () => {
@@ -165,6 +191,25 @@ function PatientDashboard({ walletData, onLogout }) {
         const updatedDoctors = doctors.filter(doc => doc.address !== doctorAddress);
         localStorage.setItem(`authorized_doctors_${walletData.address}`, JSON.stringify(updatedDoctors));
         loadAuthorizedDoctors();
+    };
+
+    const viewRecord = async (record) => {
+        try {
+            setUploadStatus('Fetching and decrypting record...');
+
+            // In a production app, you would:
+            // 1. Fetch the encrypted file from IPFS using the fileCid
+            // 2. Decrypt it using the encryption key from metadata
+            // 3. Create a download link or display the file
+
+            // For now, just show the encryption key
+            alert(`Record can be decrypted with key: ${record.metadata.encryptionKey}`);
+
+            setUploadStatus('');
+        } catch (error) {
+            console.error("Error viewing record:", error);
+            setUploadStatus('Error viewing record: ' + error.message);
+        }
     };
 
     return (
@@ -229,8 +274,15 @@ function PatientDashboard({ walletData, onLogout }) {
                                         <strong>{record.metadata.name}</strong>
                                         <p>{record.metadata.description}</p>
                                         <p>Uploaded: {new Date(record.metadata.uploadDate).toLocaleDateString()}</p>
-                                        <p>IPFS CID: {record.cid}</p>
+                                        <p>Metadata CID: {record.cid}</p>
+                                        <p>File CID: {record.metadata.fileCid}</p>
                                     </div>
+                                    <button
+                                        onClick={() => viewRecord(record)}
+                                        className="view-button"
+                                    >
+                                        View Record
+                                    </button>
                                 </li>
                             ))}
                         </ul>
